@@ -9,7 +9,8 @@ watches for risk events, and prepares decision-ready alerts for authorities.
 ```
 .
 ├── backend/         # Python: FastAPI APIs, AI agents, ML pipeline
-├── frontend/        # React + Tailwind UI (Police Dashboard + Tourist Portal)
+├── frontend/        # React + Tailwind web UI (Police Dashboard + Tourist Portal)
+├── mobile/          # Tourist-facing installable PWA (real GPS, SOS, offline)
 └── DOCUMENTATION.md # full project documentation (architecture, diagrams, data)
 ```
 
@@ -17,6 +18,10 @@ watches for risk events, and prepares decision-ready alerts for authorities.
   [backend/README.md](backend/README.md) for per-milestone docs.
 - **[frontend/](frontend/)** — React + Tailwind app (Leaflet map). See
   [frontend/README.md](frontend/README.md).
+- **[mobile/](mobile/)** — the tourist app: an installable PWA with real GPS
+  tracking, hold-to-fire SOS, an offline ping queue, and a Demo mode. Built
+  Capacitor-ready so it can become a native Android/iOS app without a
+  rewrite. See [mobile/README.md](mobile/README.md).
 - **[DOCUMENTATION.md](DOCUMENTATION.md)** — the complete, detailed write-up:
   architecture diagrams, tech-stack rationale, data, and how it was built.
 
@@ -73,6 +78,19 @@ The dev server proxies `/api/*` → the backend on `:8000`, so no CORS setup is
 needed. Open **http://127.0.0.1:8080** — the **Police Dashboard** shows the live
 map, zones, incidents, and alerts; the **Tourist Portal** lets you register,
 share location, and trigger panic.
+
+### 3) Mobile app (Tourist PWA)
+
+```bash
+cd mobile
+npm install
+cp .env.example .env          # VITE_API_BASE -> your backend (default http://localhost:8000)
+npm run dev                   # http://localhost:8081
+```
+
+Runs on its own origin and calls the API cross-origin; `CORS_ORIGINS` in
+`backend/.env` already allows it. For a real phone test you need https (GPS is
+blocked on insecure origins) — see [mobile/README.md](mobile/README.md).
 
 ### Try it
 - In the Tourist Portal: register (keep consent checked), then **Share location**

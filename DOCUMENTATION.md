@@ -539,6 +539,107 @@ Thin routers delegate to the orchestrator/services; serializers convert PostGIS
 geometry to `{lat, lon}` / GeoJSON for the client. The frontend is a two-view SPA
 talking to those endpoints through a Vite dev proxy.
 
+### 10.6 AI Emergency Voice Assistant (Twilio + Groq)
+
+A **two-way phone conversation** for a tourist in distress. Instead of only a
+silent panic button, the tourist can request an **outbound AI voice call**: the
+platform dials their phone and a calm assistant speaks to them, listens to their
+reply, and responds turn-by-turn with grounded, location-aware safety guidance —
+while the full transcript streams into the incident record on the police
+dashboard.
+
+**Where it lives:**
+[`app/api/voice.py`](backend/app/api/voice.py) (webhook + trigger endpoints) and
+[`app/services/twilio_voice.py`](backend/app/services/twilio_voice.py) (Twilio
+client + TwiML builders). The router is mounted at both `/voice/*` and
+`/api/voice/*`.
+
+**How it works (per turn):**
+1. The tourist triggers a call. The endpoint creates a **PANIC incident** + a
+   **HIGH advisory alert** (so it shows on the dashboard), then asks Twilio to
+   dial the tourist's number, pointing Twilio's webhook at
+   `TWILIO_WEBHOOK_BASE_URL/voice/greeting`.
+2. When the tourist answers, Twilio fetches **TwiML** (Twilio's XML) from
+   `/voice/greeting`, which greets them by name, states their last-known location
+   (containing zone, or coordinates), and opens a speech `<Gather>`.
+3. The tourist speaks; Twilio transcribes it and POSTs the text to
+   `/voice/respond`. There the **Groq LLM** produces a short, calming, ASCII-clean
+   reply as strict JSON (`reply` + `is_resolved`), which is spoken back and a new
+   `<Gather>` continues the conversation.
+4. Each turn is appended to `incident.details["transcript"]`; the call loops until
+   the tourist indicates they are safe (`is_resolved=true` → the assistant says
+   goodbye and hangs up). `/voice/status` records the final call status/duration.
+
+**Design choices consistent with the rest of the system:**
+- **Advisory & human-visible.** The call never dispatches responders; it creates a
+  HIGH alert and a live transcript for an operator, who still makes the call.
+- **Grounded.** The greeting and each reply are anchored to the tourist's real
+  last-known location via the same PostGIS lookups used elsewhere.
+- **Degrades safely.** The service has a **dry-run mode** (no Twilio credentials →
+  logs a mock call SID instead of dialing), and `/voice/respond` falls back to a
+  **deterministic heuristic** reply if the LLM key/network is unavailable, so the
+  call is never left silent.
+- **This is off the life-safety hot path** — it's an assistance channel a tourist
+  opts into, not a gate on any automated detection.
+
+**Endpoints:**
+
+| Endpoint | Caller | Purpose |
+|---|---|---|
+| `POST /voice/call-me` | Tourist app | Create the incident/alert and dispatch the outbound call. |
+| `POST /voice/greeting` | Twilio | TwiML greeting + first speech `<Gather>` when the tourist answers. |
+| `POST /voice/respond` | Twilio | Receives transcribed speech → LLM reply → next TwiML turn; logs transcript. |
+| `POST /voice/status` | Twilio | Call-ended status callback (final status + duration). |
+
+**Voice-call flow (sequence diagram):**
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant T as Tourist phone
+  participant API as FastAPI (/voice)
+  participant TW as Twilio
+  participant LLM as Groq LLM
+  participant DB as Postgres
+
+  T->>API: POST /voice/call-me
+  API->>DB: create PANIC incident + HIGH alert
+  API->>TW: calls.create(to, url=/voice/greeting)
+  TW->>T: rings the tourist's phone
+  T->>TW: answers
+  TW->>API: POST /voice/greeting
+  API->>DB: last-known location (zone / coords)
+  API-->>TW: TwiML greeting + <Gather speech>
+  loop each turn until safe
+    T->>TW: speaks
+    TW->>API: POST /voice/respond (SpeechResult)
+    API->>LLM: reply + is_resolved (strict JSON)
+    LLM-->>API: calming, location-aware reply
+    API->>DB: append turn to transcript
+    API-->>TW: TwiML <Say> + next <Gather>
+  end
+  TW->>API: POST /voice/status (completed)
+  API->>DB: final status + duration
+```
+
+**Configuration ([`.env`](backend/.env)):**
+
+| Variable | Meaning |
+|---|---|
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Twilio API credentials. |
+| `TWILIO_FROM_PHONE` | The Twilio number calls originate from. |
+| `TWILIO_WEBHOOK_BASE_URL` | **Public** base URL Twilio calls back into (see below). |
+| `TWILIO_DRY_RUN` | `true` → mock the call (no real dial), for local testing. |
+| `LLM_*` | The same Groq settings the agents use drive the conversation. |
+
+**Operational requirement — a public tunnel.** Twilio calls back into the backend
+over the public internet, so `localhost:8000` must be exposed via a tunnel
+(ngrok / Cloudflare) and `TWILIO_WEBHOOK_BASE_URL` set to that HTTPS URL. If the
+URL is stale/unreachable, Twilio connects the call but plays *"could not connect
+to server"* — because it can't fetch the greeting TwiML. See §14 for the tunnel
+step. A reserved ngrok domain keeps the URL stable so it doesn't need re-editing
+each session.
+
 ---
 
 ## 11. The escalation flow (sequence diagram)
@@ -634,6 +735,18 @@ uv run python -m scripts.seed              # synthetic Bengaluru data
 uv run python -m scripts.train_risk_model  # train the area-risk model
 uv run uvicorn app.main:app --reload       # API + docs at http://localhost:8000/docs
 ```
+
+### AI Voice calls — public tunnel (optional; only for the voice feature)
+The Twilio voice assistant (§10.6) needs Twilio to reach the backend over the
+public internet, so expose `localhost:8000` with a tunnel and point
+`TWILIO_WEBHOOK_BASE_URL` at it:
+```bash
+# example with ngrok (a reserved domain keeps the URL stable across restarts)
+ngrok http 8000 --url=your-reserved-domain.ngrok-free.dev
+# then set in backend/.env:  TWILIO_WEBHOOK_BASE_URL=https://your-reserved-domain.ngrok-free.dev
+```
+Leave `TWILIO_DRY_RUN=true` (or omit Twilio credentials) to develop without a
+tunnel — calls are mocked and the rest of the app is unaffected.
 
 ### Frontend
 ```bash
@@ -740,8 +853,9 @@ location" — instead of raw coordinates. They plan a trip (real **OSRM** road
 route via [routing.py](backend/app/services/routing.py), straight-line
 fallback), get a **safety score sampled along the route**, stream location (trip
 simulation in the demo), and see live status from the four engines — **safety
-information only, never crime specifics**. A panic button and an AI-assistant
-placeholder are present.
+information only, never crime specifics**. A panic button and a working **AI
+Emergency Voice Assistant** (an outbound two-way phone call — see §10.6) are
+present.
 
 **Police experience** ([app/api/police.py](backend/app/api/police.py)). Police
 see **all tourists** with live position + status, per-tourist activity, and the

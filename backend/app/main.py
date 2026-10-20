@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
     auth,
@@ -41,6 +42,20 @@ def create_app() -> FastAPI:
         ),
         version="0.1.0",
         lifespan=lifespan,
+    )
+
+    # The tourist PWA and police dashboard are served from their own origins,
+    # so browsers need an explicit CORS grant. Origins come from the env
+    # (CORS_ORIGINS) so production never has to allow a dev host.
+    settings = get_settings()
+    origins = settings.cors_origin_list
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        # Credentials cannot be combined with a wildcard origin.
+        allow_credentials="*" not in origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     app.include_router(health.router)

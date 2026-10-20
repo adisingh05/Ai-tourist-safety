@@ -83,3 +83,41 @@ def test_police_cannot_use_me(client, db_session):
                                             "password": "x123456"}).json()["access_token"]
     r = client.get("/me/status", headers={"Authorization": f"Bearer {tok}"})
     assert r.status_code == 403
+
+
+def test_ping_source_allowlist():
+    """A client may label a ping, but only with a known source.
+
+    Demo pings must stay distinguishable from real ones — an officer reading
+    simulated movement as a tourist in distress is a safety failure — while
+    an arbitrary client-supplied string must never reach the database.
+    """
+    from app.api.me import _ping_source
+
+    assert _ping_source("demo") == "demo"
+    assert _ping_source("mobile_gps") == "mobile_gps"
+    assert _ping_source("tourist-app") == "tourist-app"
+    # Unknown / missing values collapse to the generic app source.
+    assert _ping_source("anything-else") == "tourist-app"
+    assert _ping_source("") == "tourist-app"
+    assert _ping_source(None) == "tourist-app"
+
+
+def test_demo_ping_is_recorded_as_demo(client, db_session):
+    """A ping sent in demo mode is persisted with the `demo` source."""
+    from app.db.models import LocationPing
+
+    h = _auth(client, email="demomode@example.com")
+    r = client.post(
+        "/me/pings",
+        headers=h,
+        json={"location": {"lat": 12.97, "lon": 77.59}, "source": "demo"},
+    )
+    assert r.status_code == 200
+
+    ping = (
+        db_session.query(LocationPing)
+        .filter_by(id=r.json()["ping_id"])
+        .one()
+    )
+    assert ping.source == "demo"

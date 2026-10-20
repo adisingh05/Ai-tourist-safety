@@ -187,6 +187,17 @@ def my_status(
     return resp
 
 
+# Ping sources a tourist client may claim. Anything else collapses to the
+# generic app source, so a client cannot invent labels — but a simulated
+# ping MUST stay distinguishable from a real one, or an officer could read
+# demo movement as a tourist genuinely in distress.
+_ALLOWED_PING_SOURCES = {"tourist-app", "mobile_gps", "demo"}
+
+
+def _ping_source(claimed: str | None) -> str:
+    return claimed if claimed in _ALLOWED_PING_SOURCES else "tourist-app"
+
+
 @router.post("/pings", response_model=OrchestrationResponse)
 def ingest_my_ping(
     payload: PingIngestRequest,
@@ -200,7 +211,8 @@ def ingest_my_ping(
     result = orch.process_location_update(
         tourist.id, payload.location.lat, payload.location.lon,
         payload.recorded_at or datetime.now(UTC),
-        speed_mps=payload.speed_mps, accuracy_m=payload.accuracy_m, source="tourist-app",
+        speed_mps=payload.speed_mps, accuracy_m=payload.accuracy_m,
+        source=_ping_source(payload.source),
     )
     return _to_orch_response(result)
 

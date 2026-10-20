@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    # Browser origins allowed to call the API (comma-separated in the env).
+    # The tourist PWA and the police dashboard run on their own dev servers,
+    # so they are cross-origin and need this. "*" allows any origin.
+    cors_origins: str = "http://localhost:8080,http://localhost:8081"
 
     # Postgres
     postgres_user: str = "tourist"
@@ -67,6 +71,11 @@ class Settings(BaseSettings):
     twilio_from_phone: str = ""
     twilio_webhook_base_url: str = ""
     twilio_dry_run: bool = False
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """`cors_origins` parsed into a list (empty entries dropped)."""
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     @property
     def database_url(self) -> str:
